@@ -1,0 +1,83 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v4
+
+      - name: Siapkan JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Siapkan Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Cari & siapkan folder project (otomatis, zip bersarang pun bisa)
+        run: |
+          set -e
+          if [ -f settings.gradle.kts ]; then
+            echo "Project langsung ada di repo"
+            PROJ="."
+          else
+            mkdir -p _proj
+            # zip paling baru (urut nama/versi), di folder mana pun, selain _proj
+            ZIP=$(find . -path ./_proj -prune -o -type f -iname '*.zip' -print | sort -V | tail -1)
+            if [ -z "$ZIP" ]; then
+              echo "::error::Tidak ada file .zip maupun settings.gradle.kts di repo"
+              exit 1
+            fi
+            echo "Memakai: $ZIP"
+            unzip -q -o "$ZIP" -d _proj
+            # zip di dalam zip: ekstrak berulang sampai project ketemu (maks 4 tingkat)
+            for i in 1 2 3 4; do
+              if find _proj -name settings.gradle.kts | grep -q .; then break; fi
+              find _proj -type f -iname '*.zip' | while IFS= read -r Z; do
+                D="${Z%.*}_isi"
+                mkdir -p "$D"
+                unzip -q -o "$Z" -d "$D"
+                rm -f "$Z"
+              done
+            done
+            SET=$(find _proj -name settings.gradle.kts | head -1)
+            if [ -z "$SET" ]; then
+              echo "::error::settings.gradle.kts tidak ditemukan di dalam zip"
+              exit 1
+            fi
+            PROJ=$(dirname "$SET")
+          fi
+          echo "Folder project: $PROJ"
+          echo "PROJ=$PROJ" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJ }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Ambil APK
+        run: cp "${{ env.PROJ }}/app/build/outputs/apk/debug/app-debug.apk" BriefingShift.apk
+
+      - name: Simpan APK sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BriefingShift-apk
+          path: BriefingShift.apk
+
+      - name: Terbitkan ke Releases (download langsung dari Chrome)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Briefing Shift build ${{ github.run_number }}
+          files: BriefingShift.apk
